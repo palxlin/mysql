@@ -43,6 +43,17 @@ typedef enum {
 	BACKEND_TYPE_RO
 } backend_type_t;
 
+typedef struct $
+{
+	gchar *database_name;
+	gchar *ip;
+	gint   port;
+	gchar *user;
+	gchar *password;
+	gint   min;
+	gint   max;
+} node_datanode_inf_t;
+
 typedef struct {
 	network_address *addr;
    
@@ -55,10 +66,11 @@ typedef struct {
 
 	guint connected_clients; /**< number of open connections to this backend for SQF */
 
-  /*begin of add*/
-  node_datanode_inf_t *node_inf;
-  backend_config_t  *config;	/* configuration used to initiate the connection */
-  /*end of add*/
+  	/*begin of add*/
+  	node_datanode_inf_t *node_inf;
+  	GPtrArray *pending_dbconn;	// pending connections hashed by IP address
+  	/*backend_config_t  *config;	 configuration used to initiate the connection */
+  	/*end of add*/
 
 	GString *uuid;           /**< the UUID of the backend */
 } network_backend_t;

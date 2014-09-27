@@ -345,6 +345,10 @@ int chassis_mainloop(void *_chas) {
 		chassis_event_threads_start(chas->threads);
 	}
 
+	/*begin of add init the connection of backends pool*/
+	network_connection_pool_very_init(_chas);
+	/*end of add*/
+	
 	/**
 	 * handle signals and all basic events into the main-thread
 	 *

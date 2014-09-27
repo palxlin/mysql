@@ -55,8 +55,8 @@
 #include "chassis-timings.h"
 #include "sys-pedantic.h"
 #include "lua-scope.h"
-#include "network-backend.h"
-#include "lua-registry-keys.h"
+#include "network-backend.h
+"#include "lua-registry-keys.h"
 
 typedef struct network_mysqld_con network_mysqld_con; /* forward declaration */
 
@@ -93,8 +93,8 @@ typedef struct {
 	NETWORK_MYSQLD_PLUGIN_FUNC(con_init);
 	/**
 	 * Called when MySQL Proxy needs to establish a connection to a backend server
-	 *
-	 * Returning a handshake response packet from this callback will cause the con_read_handshake step to be skipped.
+	 
+*	 * Returning a handshake response packet from this callback will cause the con_read_handshake step to be skipped.
 	 * The next state then is con_send_handshake.
 	 */
 	NETWORK_MYSQLD_PLUGIN_FUNC(con_connect_server);
@@ -424,14 +424,15 @@ typedef enum {
     CON_STATE_ASYNC_NONE
 } async_con_state;
 
-typede struct {
-  async_con_state	state;
+typedef struct {
+    async_con_state	    state;
 
 	network_mysqld_async_plugins plugins;
 	network_socket		*server;	              /* database connection */
 	network_mysqld 		*srv; 		              /* our srv object */
-	GTimeVal 		lastused;                     /** last time this object was talked to*/
+	GTimeVal 		    lastused;                 /** last time this object was talked to*/
 	backend_config 		*config;	              /* configuration used to initiate the connection */
+	node_datanode_inf_t *node_inf;
 
 	void 				*plugin_con_state;	          /*global connection states/backend*/
 

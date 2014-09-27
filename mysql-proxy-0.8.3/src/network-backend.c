@@ -143,6 +143,47 @@ int network_backends_add(network_backends_t *bs, /* const */ gchar *address, bac
 	return 0;
 }
 
+/*begin of add*/
+/*
+ * add backend by nodeinf
+ */
+int network_backends_add_by_nodeinf(network_backends_t *bs, node_datanode_inf_t *node_inf)
+{
+	network_backend_t *new_backend;
+	gchar address[128];
+	guint i;
+
+	new_backend = network_backend_new();
+    new_backend->node_inf = node_inf;
+    new_backend->pending_dbconn = g_ptr_array_new();
+
+    snprintf(address, sizeof(address), "%s:%d", node_inf->ip, node_inf->port);
+	if (0 != network_address_set_address(new_backend->addr, address)) {
+		network_backend_free(new_backend);
+		return -1;
+	}
+
+	g_mutex_lock(bs->backends_mutex);
+	for (i = 0; i < bs->backends->len; i++) {
+		network_backend_t *old_backend = bs->backends->pdata[i];
+
+		if (strleq(S(old_backend->addr->name), S(new_backend->addr->name))) {
+			network_backend_free(new_backend);
+
+			g_mutex_unlock(bs->backends_mutex);
+			g_critical("backend %s is already exist!", address);
+			return -1;
+		}
+	}
+	g_ptr_array_add(bs->backends, new_backend);
+	g_mutex_unlock(bs->backends_mutex);
+
+	g_message("added %s backend: %s", (type == BACKEND_TYPE_RW) ? "read/write" : "read-only", address);
+
+	return 0;
+}
+/*end of add*/
+
 /**
  * updated the _DOWN state to _UNKNOWN if the backends were
  * down for at least 4 seconds

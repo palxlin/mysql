@@ -63,7 +63,11 @@ struct chassis {
 	gchar *base_dir;				/**< base directory for all relative paths referenced */
 	gchar *user;					/**< user to run as */
 
-	chassis_private *priv;
+    /*begin of add*/
+	chassis_private *priv;          /**< backends pool and cli-connections*/
+	node_database_inf_t *backends_inf;
+	/*end of add*/
+
 	void (*priv_shutdown)(chassis *chas, chassis_private *priv);
 	void (*priv_free)(chassis *chas, chassis_private *priv);
 

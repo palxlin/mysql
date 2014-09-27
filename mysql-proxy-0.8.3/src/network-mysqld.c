@@ -226,12 +226,44 @@ int network_mysqld_init(chassis *srv) {
 }
 
 /**begin of add*/
-int network_connection_pool_init(chassis *srv)
+/**init the backend pool memory according to the nodes_inf which is loaded by the NodeInf mode*/
+int network_backends_connection_pool_init(chassis *srv)
 {
-    gint i;
+	gint i;
+
+	/*array of all the backends connections, which is already init in network_backends_new()*/
+	network_backends_t *bs = (network_backends_t *)srv->priv->backends;
+
+	node_datanode_inf_t *node_inf = NULL;
+	GList *database_list = (GList *)node_get_all_database();
+
+	for(i = 0; i < g_list_length(database_list); i++)
+	{
+		node_inf = (node_datanode_inf_t *)(g_list_nth(database_list, i));
+		if( NULL != node_inf)
+		{
+			/*
+			network_backend_t *backend = network_backend_new();
+
+			backend->node_datanode_inf_t = node_inf;
+			*/
+			if (-1 == network_backends_add_by_nodeinf(bs, node_inf)) 
+			{
+				return -1;
+			}
+		}
+	}
+}
+
+
+/**init the backend connection*/
+int network_connection_pool_very_init(chassis *srv)
+{
+    gint i, j;
+    gint min_conn;
     //node_datanode_inf_t *node_inf = NULL;
     network_backend_t *backend = NULL;
-    backend_connection_state_t *pbcs;
+    backend_connection_state_t *pbcs = NULL;
     
     GPtrArray *backends = (GPtrArray *)srv->priv->backends->backends;
     //GList *database_list = (GList *)node_get_all_database();
@@ -239,11 +271,17 @@ int network_connection_pool_init(chassis *srv)
     for(i = 0; i < backends->len; i++)
     {
         //backend = (node_datanode_inf_t *)(g_list_nth(database_list, i));      /*to be set*/
-        if( NULL != (backend=backends->pdata[i]) )
+        backend = (network_backend_t *)(backends->pdata[i]);
+        if( NULL != backend )
         {
-            for(j = 0; j < node_inf->min; j++)
+        	min_conn = backend->node_inf->min;
+            for(j = 0; j < min_conn; j++)
             {
-                pbcs = network_mysqld_async_con_init(srv);
+                pbcs = network_mysqdl_async_con_init(srv);
+                pbcs->node_inf = backend->node_inf;
+                pbcs->server->addr = backend->addr;
+                pbcs->server->addr.str = g_strdup(backend->addr.str);
+
                 if(0 != newwork_mysqld_con_connect(srv, pbcs->server))
                 {
                     /* this backend is unavailable*/
@@ -252,27 +290,27 @@ int network_connection_pool_init(chassis *srv)
                     network_mysqld_async_con_state_free(pbcs);
                     break;
                 }
-                LOG_INFO("%s.%d SOCKET=%d: new backend connection, remote=%s:%s.", __FILE__, __LINE__,  pbcs->server->fd, pbcs->server->addr.str, pbcs->server->default_db->str);
+                g_message("%s.%d SOCKET=%d: new backend connection, remote=%s:%s.", __FILE__, __LINE__,  pbcs->server->fd, pbcs->server->addr.str, pbcs->server->default_db->str);
                 if( backend->state != BACKEND_STATE_UP)
                 {
                     backend->state = BACKEND_STATE_UP;
                     g_get_current_time(&(backend->state_since));
                 }
-                fcntl(pscs->server->fd, F_SETFL, O_NONBLOCK | O_RDWR);
+                fcntl(pbcs->server->fd, F_SETFL, O_NONBLOCK | O_RDWR);
                 
                 /*add a EV_READ event because we just connect to the server*/
-                LOG_DEBUG("%s.%d SOCKET=%d: wait for event EV_READ.", __FILE__, __LINE__, pbcs->server->fd);
+                g_debug("%s.%d SOCKET=%d: wait for event EV_READ.", __FILE__, __LINE__, pbcs->server->fd);
                 
                 /*ready to read data from server*/
-                event_set();
-                event_base();
-                event_add();
+                event_set(&(pbcs->server->event), pbcs->server->fd, EV_READ, network_mysqld_async_con_handle, pbcs);
+                event_base(srv->event_base, &(pbcs->server->event));
+                event_add(&(pbcs->server->event), NULL);
                 
-                g_ptr_array_add();
+                g_ptr_array_add(backend->pending_dbconn);
                 
-                pbcs->state = 
+                pbcs->state = CON_STATE_ASYNC_READ_HANDSHAKE;
                 
-                g_get_current_time(&(pscs->lastused));
+                g_get_current_time(&(pbcs->lastused));
             }
         }
     }

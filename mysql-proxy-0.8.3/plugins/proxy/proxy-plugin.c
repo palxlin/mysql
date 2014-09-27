@@ -2313,6 +2313,10 @@ int network_mysqld_proxy_plugin_apply_config(chassis *chas, chassis_plugin_confi
 			return -1;
 		}
 	}
+	/*begin of add  init backend pool structure*/
+    network_backends_connection_pool_init(chas);
+    
+	/*end of add*/
 
 	/* load the script and setup the global tables */
 	network_mysqld_lua_setup_global(chas->priv->sc->L, g);
