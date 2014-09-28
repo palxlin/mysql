@@ -277,12 +277,12 @@ int network_connection_pool_very_init(chassis *srv)
         	min_conn = backend->node_inf->min;
             for(j = 0; j < min_conn; j++)
             {
-                pbcs = network_mysqdl_async_con_init(srv);
+                pbcs = network_mysqld_async_con_init(srv);
                 pbcs->node_inf = backend->node_inf;
                 pbcs->server->addr = backend->addr;
                 pbcs->server->addr.str = g_strdup(backend->addr.str);
 
-                if(0 != newwork_mysqld_con_connect(srv, pbcs->server))
+                if(0 != network_socket_connect(pbcs->server))
                 {
                     /* this backend is unavailable*/
                     backend->state = BACKEND_STATE_DOWN;
@@ -315,6 +315,45 @@ int network_connection_pool_very_init(chassis *srv)
         }
     }
 }
+
+backend_connection_state_t *network_mysqld_async_con_init(chassis *srv)
+{
+	backend_connection_state_t *backend_con;
+
+	backend_con = g_new0(backend_connection_state_t, 1);
+
+	backend_con->srv = srv;
+	backend_con->server = network_socket_init();
+	backend_con->state = CON_STATE_ASYNC_INIT;
+
+    con->plugins.con_init                      = proxy_async_init;
+	con->plugins.con_read_handshake            = proxy_async_read_handshake;
+	con->plugins.con_create_auth			   = proxy_async_create_auth;
+	con->plugins.con_send_auth                 = proxy_async_send_auth;
+	con->plugins.con_read_auth_result          = proxy_async_read_auth_result;
+
+	return backend_con;
+}
+
+int network_mysqld_async_con_state_free(backend_connection_state_t *backend_con)
+{
+	if(!backend_con)
+		return -100;
+
+	/*remove the backend_connection_state_t from the PtrArray of pending_dbconn*/
+	proxy_connection_pool_del(backend_con);
+
+	if(bcakend_con)
+	{
+		if(bakcend_con->server)
+			network_socket_free(backend_con->server);
+
+		g_free(backend_con);
+	}
+
+	return 0;
+}
+
 /**end of add*/
 
 network_mysqld_con *network_mysqld_con_init() {
@@ -1104,6 +1143,99 @@ static int network_mysqld_con_track_auth_result_state(network_mysqld_con *con) {
 	}
 	return err ? -1 : 0;
 }
+
+/*begin of add*/
+static const char *get_event_name(int events)
+{
+	static char name[64];
+	name[0] = 0x00;
+
+	if(events & EV_TIMEOUT)
+		strcat(name, "|EV_TIMEOUT");
+	if(events & EV_READ)
+		strcat(name, "|EV_READ");
+    if (events & EV_WRITE)
+        strcat(name, "|EV_WRITE");
+    if (events & EV_SIGNAL)
+        strcat(name, "|EV_SIGNAL");
+    if (events & EV_PERSIST)
+        strcat(name, "|EV_PERSIST");
+
+    if (name[0] == '\0')
+        return "NONE";
+    else
+        return name + 1;
+}
+
+/**
+ * handle the different states of the MySQL asynchronous connection protocol from the Proxy to the Database
+ */
+ void network_mysqld_async_con_handle(int event_fd, short events, void *user_data)
+ {
+ 	async_con_state             ostate;
+ 	backend_connection_state_t *con = (backend_connection_state_t *)user_data;
+ 	chassis                    *srv = con->srv;
+ 	int                         ret;
+
+ #define ASYNC_WAIT_FOR_EVENT(ev_struct, ev_type, timeout) \
+ 	g_debug("%s.%d SOCKET=%d: ASYNC_WAIT_FOR_EVENT %s.\n", __FILE__, __LINE__, ev_struct->fd, get_event_name(ev_type)); \
+ 	event_set(&(ev_struct->event), ev_struct->fd, ev_type, network_mysqld_async_con_handle, user_data); \
+ 	event_base_set(srv->event_base, &(ev_struct->event)); \
+ 	event_add(&(ev_struct->event), timeout);
+
+ 	if(events == EV_READ)
+ 	{
+
+ 	}
+
+ 	do
+ 	{
+ 		ostate = con->state;
+
+ 		if(con->state != CON_STATE_ASYNC_INIT)
+ 			g_debug("%s.%d SOCKET=%d: async_state=%s, events=%s.", __FILE__, __LINE__, con->server->fd, sz_async_state[con->state], get_event_name(events));
+
+ 		switch(con->state)
+ 		{
+ 			case CON_STATE_ASYNC_NONE:
+ 			{
+
+ 			}
+ 			case CNO_STATE_ASYNC_ERROR:
+ 			{
+
+ 			}
+ 			case CON_STATE_ASYNC_INIT:
+ 			{
+
+ 			}
+ 			case CON_STATE_ASYNC_READ_HANDSHAKE:
+ 			{
+
+ 			}
+ 			case CON_STATE_ASYNC_CREATE_AUTH:
+ 			{
+
+ 			}
+ 			case CON_STATE_ASYNC_SEND_AUTH:
+ 			{
+
+ 			}
+ 			case CON_STATE_ASYNC_READ_AUTH_RESULT:
+ 			{
+
+ 			}
+ 			case CON_STATE_ASYNC_READ_SELECT_DB:
+ 			{
+
+ 			}
+ 		}
+ 		event_fd = -1;
+ 		events = 0;
+ 	}while( ostate != con->state )
+ }
+/*end of add*/
+
 
 /**
  * handle the different states of the MySQL protocol

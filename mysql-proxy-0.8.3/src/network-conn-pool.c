@@ -267,3 +267,39 @@ void network_connection_pool_remove(network_connection_pool *pool, network_conne
 }
 
 
+/*begin of add*/
+int proxy_connection_pool_del(backend_connection_state_t *pbcs)
+{
+	chassis *srv = pbcs->srv;
+	network_socket *server = pbcs->server;
+
+	network_backend_t *backend = NULL;
+
+	if(server->addr.str == NULL)
+		return 0;
+
+	GPtrArray *backends = (GPtrArray *)srv->priv->backends->backends;
+	for(gint i = 0; i < backends->len; i++)
+	{
+		backend = (network_backend_t *)(backends->pdata[i]);
+		if( strcmp(backend->addr->name, server->addr->name) == 0)
+		{
+			break;
+		}
+		backend = NULL;
+	}
+
+	if(backend == NULL)
+	{
+		g_debug("%s.%d can't find pool for server = %s", __FILE__, __LINE__, server->addr->name);
+		return 0;
+	}
+
+	if( g_ptr_array_remove(backend->pending_dbconn, pbcs) == FALSE)
+	{
+		g_debug("%s.%d: internal error: g_ptr_array_remove failed", __FILE__, __LINE__);
+	}
+
+	return 0;
+}
+/*end of add*/
