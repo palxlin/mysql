@@ -1176,16 +1176,38 @@ static const char *get_event_name(int events)
  	backend_connection_state_t *con = (backend_connection_state_t *)user_data;
  	chassis                    *srv = con->srv;
  	int                         ret;
+ 	GList                      *chunk = NULL;
 
  #define ASYNC_WAIT_FOR_EVENT(ev_struct, ev_type, timeout) \
  	g_debug("%s.%d SOCKET=%d: ASYNC_WAIT_FOR_EVENT %s.\n", __FILE__, __LINE__, ev_struct->fd, get_event_name(ev_type)); \
  	event_set(&(ev_struct->event), ev_struct->fd, ev_type, network_mysqld_async_con_handle, user_data); \
- 	event_base_set(srv->event_base, &(ev_struct->event)); \
- 	event_add(&(ev_struct->event), timeout);
+ 	chassis_event_add_with_timeout(srv, &(ev_struct->event), timeout);
 
  	if(events == EV_READ)
  	{
+ 		int b = -1;
 
+ 		if(ioctl(event_fd, FIONREAD, &b))
+ 		{
+ 			g_error("ioctl(%d, FIONREAD, ...) failed: %s", event_fd, g_strerror(errno));
+ 			con->state = CNO_STATE_ASYNC_ERROR;
+ 		}
+ 		else if(b != 0)
+ 		{
+ 			con->server->to_read = b;
+ 		}
+ 		else
+ 		{
+ 			if(errno == 0 || errno == EWOULDBLOCK)
+ 				return ;
+ 			else
+ 			{
+ 				con->state = CNO_STATE_ASYNC_ERROR;
+ 				g_error("$s.%d: CNO_STATE_ASYNC_ERROR EV_READ addr=%s error=%d error:%s",
+ 				 __FILE__, __LINE__, con->server->add->name, errno, g_strerror(errno));
+ 			}
+ 			return ;
+ 		}
  	}
 
  	do
@@ -1199,31 +1221,195 @@ static const char *get_event_name(int events)
  		{
  			case CON_STATE_ASYNC_NONE:
  			{
-
+ 				/*this state means were done connection to the database*/
+ 				if(con->server->recv_queue->chunks != NULL)
+ 				{
+ 					chunk = con->server->recv_queue->chunks->head;
+ 					if(chunk != NULL)
+ 					{
+ 						GString *packet = (GString *)(chunk->data);
+ 						g_queue_delete_link(con->server->recv_queue->chunks, chunk);
+ 						g_string_free(packet, TRUE);
+ 					}
+ 				}
  			}
  			case CNO_STATE_ASYNC_ERROR:
  			{
+ 				g_error("CNO_STATE_ASYNC_ERROR %s failed", 
+ 					((con->server != NULL) && (con->server->add->name != NULL)) ?  con->server->addr->name : "srv", g_strerror(errno));
 
+ 				network_mysqld_async_con_state_free(con);
  			}
  			case CON_STATE_ASYNC_INIT:
  			{
+ 				/*so far it's doing nothing in this case*/
+ 				func = con->plugins.con_init;
+ 				if((ret = (*func)(srv, con)) != 0)
+ 					g_warning("CON_STATE_ASYNC_INIT returned an error = %d", ret);
 
+ 				return;
  			}
  			case CON_STATE_ASYNC_READ_HANDSHAKE:
  			{
+ 				/*read auth_data from the mysql-server*/
+ 				network_socket *recv_sock;
+ 				recv_sock = con->server;
+ 				g_assert(events == 0 || event_fd == recv_sock->fd);
 
+ 				switch(network_mysqld_read(srv, recv_sock))
+ 				{
+ 					case NETWORK_SOCKET_SUCCESS:
+ 						break;
+ 					case NETWORK_SOCKET_WAIT_FOR_EVENT:
+ 						timeout = con->read_timeout;
+
+ 						ASYNC_WAIT_FOR_EVENT(con->server, EV_READ, &timeout);
+ 						NETWORK_MYSQLD_CON_TRACK_TIME(con, "async_wait_for_event::read_handshake");
+
+ 						return;
+ 					case NETWORK_SOCKET_ERROR_RETRY:
+ 					case NETWORK_SOCKET_ERROR:
+ 						g_critical("%s.%d: netowrk_mysqld_read(CON_STATE_READ_HANDSHAKE) returned an error", __FILE__, __LINE__);
+
+ 						con->state = CON_STATE_ASYNC_ERROR;
+ 						break;
+ 				}
+ 				if(con->state != ostate) /* the state has changed like CON_STATE_ERROR*/
+ 					break;
+
+ 				func = con->plugins.con_read_handshake;
+ 				switch( (*func)(srv, con))
+ 				{
+ 					case NETWORK_SOCKET_SUCCESS:
+ 						break;
+ 					case NETWORK_SOCKET_ERROR:
+ 						con->state = CON_STATE_ASYNC_ERROR:
+ 						g_warning("%s.%d: CON_STATE_ASYNC_READ_HANDSHAKE con_read_handshake failed returned an error", __FILE__, __LINE__);
+ 						break;
+ 					default:
+ 						con->state = CON_STATE_ASYNC_ERROR;
+ 						g_warning("%s.%d: ...", __FILE__, __LINE__);
+ 						break;
+ 				}
+ 				con->state = CON_STATE_ASYNC_CREATE_AUTH;
+ 				break;
  			}
  			case CON_STATE_ASYNC_CREATE_AUTH:
  			{
-
+ 				/*proxy logs into the database itself without the client*/
+ 				func = con->plugins.con_create_auth;
+ 				switch((*func)(srv, con))
+ 				{
+ 					case NETWORK_SOCKET_SUCCESS:
+ 						break;
+ 					case NETWORK_SOCKET_ERROR:
+ 					{
+ 						chunk = con->server->send_queue->chunks->head;
+ 						if(chunk != NULL)
+ 						{
+ 							/*con->server->packet_len = PACKET_LEN_UNSET;*/
+ 							g_string_free((GString *)(chunk->data), TURE);
+ 							g_queue_delete_link(con->server->send_queue->chunks, chunk);
+ 						}
+ 						con->state = CNO_STATE_ASYNC_ERROR;
+ 						g_warning("%s.%d: plugin_call(CON_STATE_ASYNC_CREATE_AUTH) returned an error", __FILE__, __LINE__);
+ 					}
+ 					default:
+ 						g_warning("%s.%d: unexpected return from plugins.con_create_auth.", __FILE__, __LINE__);
+ 						break;
+ 				}
+ 				if(con->server->recv_queue->chunks != NULL)
+ 				{
+ 					chunk = con->server->recv_queue->chunks->head;
+ 					if(chunk != NULL)
+ 					{
+ 						g_queue_delete_link(con->server->recv_queue->chunks, chunk);
+ 						g_string_free((GString *)(chunk->data), TURE);
+ 					}
+ 				}
+ 				con->state = CON_STATE_ASYNC_SEND_AUTH;
+ 				break;
  			}
  			case CON_STATE_ASYNC_SEND_AUTH:
  			{
+ 				/* send the auth pack from proxy to mysql server*/
+ 				switch(network_mysqld_write(srv, con->server))
+ 				{
+ 					case NETWORK_SOCKET_SUCCESS:
+ 						break;
+ 					case NETWORK_SOCKET_WAIT_FOR_EVENT:
+ 						timeout = con->write_timeout;
+ 						ASYNC_WAIT_FOR_EVENT(con->server, EV_WRITE, &timeout);
+ 						NETWORK_MYSQLD_CON_TRACK_TIME(con, "async_wait_for_event::send_auth");
+ 						return;
+ 					case NETWORK_SOCKET_ERROR_RETRY:
+ 					case NETWORK_SOCKET_ERROR:
+ 						con->state = CNO_STATE_ASYNC_ERROR;
+ 						break;
+ 				}
+ 				if(con->state != ostate) /*the state has changed like CON_STATE_ASYNC_ERROR*/
+ 					break;
+
+ 				con->state = CON_STATE_ASYNC_READ_AUTH_RESULT;
 
  			}
  			case CON_STATE_ASYNC_READ_AUTH_RESULT:
  			{
+ 				network_socket *recv_sock = con->server;
 
+ 				g_assert(events == 0 || event_fd == recv_sock->fd);
+
+ 				switch(network_mysqld_read(srv, recv_sock))
+ 				{
+ 					case NETWORK_SOCKET_SUCCESS:
+ 						break;
+ 					case NETWORK_SOCKET_WAIT_FOR_EVENT:
+ 						timeout = con->read_timeout;
+
+ 						ASYNC_WAIT_FOR_EVENT(con->server, EV_READ, &timeout);
+ 						NETWORK_MYSQLD_CON_TRACK_TIME(con, "async_wait_for_event::read auth result");
+ 						return;
+ 					case NETWORK_SOCKET_ERROR_RETRY:
+ 					case NETWORK_SOCKET_ERROR:
+ 						g_critical("%s.%d: network_msyqld_read(CON_STATE_READ_AUTH_RESULT) returned an error", __FILE__, __LINE__);
+ 						con->state = CON_STATE_ASYNC_ERROR;
+ 						break;
+ 				}
+ 				if(con->state != ostate) /*the state has changed like CON_STATE_ERROR*/
+ 					break;
+
+ 				if( network_mysqld_con_track_auth_result_state(con) != 0)
+ 				{
+ 					con->state = CON_STATE_ERROR;
+ 					break;
+ 				}
+
+ 				switch(con->auth_result_state)
+ 				{
+ 					case MYSQLD_PACKET_OK:
+ 						/*connection is ready.. to be added*/
+ 						con->state = CON_STATE_ASYNC_NONE;
+ 						break;
+ 					case MYSQLD_PACKET_ERR:
+ 						g_warning("");
+ 						con->state = CNO_STATE_ASYNC_ERROR;
+ 						break;
+ 					case MYSQLD_PACKET_EOF:
+ 						con->state = CON_STATE_ASYNC_READ_AUTH_OLD_PASSWORD;
+ 						break;
+ 					default:
+ 						g_error("");
+ 						con->state = CNO_STATE_ASYNC_ERROR;
+ 						break;
+ 				}
+ 				g_queue_delete_link(con->server->recv_queue->chunks, chunk);
+ 				g_string_free((GString *)(con->server->recv_queue->chunks->head->data), TURE);
+
+ 				if(con->state == CNO_STATE_ASYNC_ERROR)
+ 					break;
+
+ 				proxy_connection_pool_add(con);
+ 				break;
  			}
  			case CON_STATE_ASYNC_READ_SELECT_DB:
  			{
