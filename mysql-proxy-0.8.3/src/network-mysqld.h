@@ -55,8 +55,8 @@
 #include "chassis-timings.h"
 #include "sys-pedantic.h"
 #include "lua-scope.h"
-#include "network-backend.h
-"#include "lua-registry-keys.h"
+#include "network-backend.h"
+#include "lua-registry-keys.h"
 
 typedef struct network_mysqld_con network_mysqld_con; /* forward declaration */
 
@@ -178,6 +178,18 @@ typedef struct {
 
 	NETWORK_MYSQLD_PLUGIN_FUNC(con_timeout);
 } network_mysqld_hooks;
+
+#define NETWORK_MYSQLD_ASYNC_PLUGIN_FUNC(x) network_socket_retval_t (*x)(chassis *, network_mysqld_con *)
+#define NETWORK_MYSQLD_ASYNC_PLUGIN_PROTO(x) static network_socket_retval_t x(chassis G_GNUC_UNUSED *chas, network_mysqld_con *con)
+
+typedef struct {
+	NETWORK_MYSQLD_ASYNC_PLUGIN_FUNC(con_init);
+	NETWORK_MYSQLD_ASYNC_PLUGIN_FUNC(con_read_handshake);
+	NETWORK_MYSQLD_ASYNC_PLUGIN_FUNC(con_create_auth);
+	NETWORK_MYSQLD_ASYNC_PLUGIN_FUNC(con_send_auth);
+	NETWORK_MYSQLD_ASYNC_PLUGIN_FUNC(con_read_auth_result);
+	NETWORK_MYSQLD_ASYNC_PLUGIN_FUNC(con_send_auth_old_password);
+} network_mysqld_async_hooks;
 
 /**
  * A structure containing the parsed packet for a command packet as well as the common parts necessary to find the correct
@@ -427,16 +439,24 @@ typedef enum {
 typedef struct {
     async_con_state	    state;
 
-	network_mysqld_async_plugins plugins;
+	network_mysqld_async_hooks plugins;
 	network_socket		*server;	              /* database connection */
-	network_mysqld 		*srv; 		              /* our srv object */
+	chassis             *srv; 		              /* our srv object */
 	GTimeVal 		    lastused;                 /** last time this object was talked to*/
-	backend_config 		*config;	              /* configuration used to initiate the connection */
-	node_datanode_inf_t *node_inf;
+	/*backend_config 		*config;	               configuration used to initiate the connection */
+	node_database_inf_t *node_inf;
 
 	void 				*plugin_con_state;	          /*global connection states/backend*/
 
+	guint8 auth_result_state;
+
+    /* connection specific timeouts */
+	struct timeval connect_timeout;
+	struct timeval read_timeout;
+	struct timeval write_timeout;
 } backend_connection_state_t;
+
+void network_mysqld_async_con_handle(int event_fd, short events, void *user_data);
 /*end of add*/
 
 NETWORK_API int network_mysqld_init(chassis *srv);

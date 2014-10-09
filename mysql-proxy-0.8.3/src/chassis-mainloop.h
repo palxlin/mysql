@@ -54,6 +54,25 @@ typedef struct chassis_private chassis_private;
 typedef struct chassis chassis;
 typedef struct chassis_event_threads_t chassis_event_threads_t;
 
+typedef struct 
+{
+	gchar *database_name;
+	gchar *ip;
+	gint   port;
+	gchar *user;
+	gchar *password;
+	gint   min;
+	gint   max;
+} node_database_inf_t;
+
+typedef struct
+{
+	gchar *datanode_name;
+	gchar *master_name;
+	gboolean is_slave;
+	GHashTable *hash;
+} node_datanode_inf_t;
+
 struct chassis {
 	struct event_base *event_base;
 	gchar *event_hdr_version;
@@ -65,7 +84,7 @@ struct chassis {
 
     /*begin of add*/
 	chassis_private *priv;          /**< backends pool and cli-connections*/
-	node_database_inf_t *backends_inf;
+	node_datanode_inf_t *backends_inf;
 	/*end of add*/
 
 	void (*priv_shutdown)(chassis *chas, chassis_private *priv);

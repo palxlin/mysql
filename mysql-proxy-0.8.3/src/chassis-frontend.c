@@ -70,7 +70,7 @@ int chassis_frontend_init_glib() {
 
 		return -1;
 	}
-
+/*
 	check_str = glib_check_version(GLIB_MAJOR_VERSION, GLIB_MINOR_VERSION, GLIB_MICRO_VERSION);
 
 	if (check_str) {
@@ -81,7 +81,7 @@ int chassis_frontend_init_glib() {
 
 		return -1;
 	}
-
+*/
 	if (!g_module_supported()) {
 		g_critical("loading modules is not supported on this platform");
 		return -1;

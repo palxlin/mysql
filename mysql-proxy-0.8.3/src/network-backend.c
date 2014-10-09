@@ -75,11 +75,6 @@ network_backends_t *network_backends_new() {
 
 	bs->backends = g_ptr_array_new();
 	bs->backends_mutex = g_mutex_new();
-	
-	/*begin of add*/
-	bs->backends_ac=g_hash_table_new_full(g_hash_table_string_hash, g_hash_table_string_equal, g_hash_table_string_free, g_queue_free_all);
-	bs->backends_non_ac=g_hash_table_new_full(g_hash_table_string_hash, g_hash_table_string_equal, g_hash_table_string_free, g_queue_free_all);
-  /*end of add*/
   
 	return bs;
 }
@@ -147,7 +142,7 @@ int network_backends_add(network_backends_t *bs, /* const */ gchar *address, bac
 /*
  * add backend by nodeinf
  */
-int network_backends_add_by_nodeinf(network_backends_t *bs, node_datanode_inf_t *node_inf)
+int network_backends_add_by_nodeinf(network_backends_t *bs, node_database_inf_t *node_inf)
 {
 	network_backend_t *new_backend;
 	gchar address[128];
@@ -178,7 +173,7 @@ int network_backends_add_by_nodeinf(network_backends_t *bs, node_datanode_inf_t 
 	g_ptr_array_add(bs->backends, new_backend);
 	g_mutex_unlock(bs->backends_mutex);
 
-	g_message("added %s backend: %s", (type == BACKEND_TYPE_RW) ? "read/write" : "read-only", address);
+	g_message("added backend: %s", address);
 
 	return 0;
 }

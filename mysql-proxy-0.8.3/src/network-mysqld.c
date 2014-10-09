@@ -116,6 +116,46 @@
 #define C(x) x, sizeof(x) - 1
 #define S(x) x->str, x->len
 
+/*begin of add*/
+char *sz_state[] = { 
+		"CON_STATE_INIT", 		// 0
+		"CON_STATE_SEND_HANDSHAKE", 
+		"CON_STATE_READ_AUTH", 
+		"CON_STATE_CREATE_AUTH_RESPONSE", 	// 5
+		"CON_STATE_SEND_AUTH_RESULT",
+		"CON_STATE_READ_AUTH_OLD_PASSWORD",
+		"CON_STATE_SEND_AUTH_OLD_PASSWORD",
+		"CON_STATE_READ_QUERY",	// 10
+		"CON_STATE_SEND_QUERY",
+		"CON_STATE_SEND_SINGLE_QUERY_RESULT",
+		"CON_STATE_READ_SINGLE_QUERY_RESULT",
+		"CON_STATE_READ_QUERY_RESULT",
+		"CON_STATE_SEND_QUERY_RESULT",
+
+		"CON_STATE_CLOSE_CLIENT",
+		"CON_STATE_SEND_ERROR",	// 15
+		"CON_STATE_ERROR",
+		"CON_STATE_MULTIPART_SEND_AUTH_OLD_PASSWORD",
+		"CON_STATE_MULTIPART_SEND_QUERY",
+		"CON_STATE_GET_SERVER_LIST",
+		"CON_STATE_GET_SERVER_CONNECTION_LIST",
+		"CON_STATE_PROCESS_READ_QUERY"
+};
+
+char *sz_async_state[] = { 
+		"CON_STATE_ASYNC_INIT", 		// 0
+		"CON_STATE_ASYNC_READ_HANDSHAKE", 
+		"CON_STATE_ASYNC_CREATE_AUTH", 
+		"CON_STATE_ASYNC_SEND_AUTH", 
+		"CON_STATE_ASYNC_READ_AUTH_RESULT",
+		"CON_STATE_ASYNC_SELECT_DB",
+		"CON_STATE_ASYNC_READ_AUTH_OLD_PASSWORD",
+		"CON_STATE_ASYNC_SEND_AUTH_OLD_PASSWORD",
+		"CON_STATE_ASYNC_ERROR",
+		"CON_STATE_ASYNC_NONE"	
+};
+/*end of add*/
+
 /**
  * call the cleanup callback for the current connection
  *
@@ -226,6 +266,256 @@ int network_mysqld_init(chassis *srv) {
 }
 
 /**begin of add*/
+NETWORK_MYSQLD_ASYNC_PLUGIN_PROTO(proxy_async_init)
+{
+
+	return (network_socket_retval_t)0;
+}
+
+NETWORK_MYSQLD_ASYNC_PLUGIN_PROTO(proxy_async_read_handshake)
+{
+	GString *packet;
+	GList *chunk;
+	network_socket *recv_sock;
+	guint off = 0;
+	int maj, min, patch;
+	guint16 server_cap = 0;
+	guint8  server_lang = 0;
+	guint16 server_status = 0;
+	gchar *scramble_1, *scramble_2;
+
+	recv_sock = con->server;
+	chunk = recv_sock->recv_queue->chunks->tail;
+	packet = (GString *)(chunk->data);
+
+	if(packet->len != recv_sock->packet_len + NET_HEADER_SIZE)
+	{
+		g_warning("%s.%d: hand-shake packet too small", __FILE__, __LINE__);
+		recv_sock->packet_len = PACKET_LEN_UNSET;
+		g_string_free(packet, TRUE);
+		g_queue_delete_link(recv_sock->recv_queue->chunks, chunk);
+		return NETWORK_SOCKET_ERROR;
+	}
+
+	if(packet->str[NET_HEADER_SIZE + 0] == MYSQLD_PACKET_ERR)
+	{
+		g_warning("%s.%d: hand-shake packet err < version 4.1 server", __FILE__, __LINE__);
+		recv_sock->packet_len = PACKET_LEN_UNSET;
+		g_string_free(packet, TRUE);
+		g_queue_delete_link(recv_sock->recv_queue->chunks, chunk);
+		reutrn NETWORK_SOCKET_ERROR;
+	}
+
+	/* scan for a \0*/
+	for(off =  NET_HEADER_SIZE + 1; packet->str[off] && off < packet->len + NET_HEADER_SIZE; off++);
+	
+	if(packet->str[off] != '\0')
+	{
+		/*the server has sent us garbage*/
+		recv_sock->packet_len = PACKET_LEN_UNSET;
+		g_queue_delete_link(recv_sock->recv_queue->chunks, chunk);
+		g_warning("%s.%d: hand-shake is garbage", __FILE__, __LINE__);
+
+		return NETWORK_SOCKET_ERROR;
+	}
+
+	if(3 != sscanf(packet->str + NET_HEADER_SIZE + 1, "%d.%d.%d%*s", &maj, &min, &patch))
+	{
+		/*can't parse the protocol*/
+		recv_sock->packet_len = PACKET_LEN_UNSET;
+		g_queue_delete_link(recv_sock->recv_queue->chunks, chunk);
+		g_string_free(packet, TRUE);
+		g_warning("%s.%d: hand-shake packet has invalid version", __FILE__, __LINE__);
+		return NETWORK_SOCKET_ERROR;
+	}
+
+	/* out of range*/
+	if(min < 0 || min > 100 || patch < 0 || patch > 100 || maj < 0 || maj > 100)
+	{
+		recv_sock->packet_len = PACKET_LEN_UNSET;
+		g_queue_delete_link(recv_sock->recv_queue->chunks, chunk);
+		g_string_free(packet, TRUE);
+		g_warning("%s.%d: hand-shake packet unsupported version", __FILE__, __LINE__);
+		return NETWORK_SOCKET_ERROR;
+	}
+
+	recv_sock->mysqld_version = maj*10000 + min*100 + patch;
+
+	off++;  /*ske the \0 */
+
+	recv_sock->thread_id = network_mysqld_proto_get_int32(packet, &off);
+
+	/**
+	* get the scramble buf
+	* 8 byte here and some the other 12 somewhen later
+	*/
+	scramble_1 = network_mysqld_proto_get_string_len(packet, &off, 8);
+	network_mysqld_proto_skip(packet, &off, 1);
+
+	/* we can't sniff compressed packets nor do we support SSL*/
+	packet->str[off] &= ~(CLINET_COMPRESS);
+	packet->str[off] &= ~(CLIENT_SSL);
+
+    server_cap = network_mysqld_proto_get_int16(packet, &off);
+
+    if(server_cap & CLINET_COMPRESS)
+    {
+    	packet->str[off-2] &= ~(CLINET_COMPRESS);
+    }
+    if(server_cap & CLIENT_SSL)
+    {
+    	packet->str[off-1] &= ~(CLIENT_SSL >> 8);
+    }
+
+    server_lang = network_mysqld_proto_get_int8(packet, &off);
+    server_status = network_mysqld_proto_get_int16(packet, &off);
+
+    network_mysqld_proto_skip(packet, &off, 13);
+
+    scramble_2 = netowrk_mysqld_proto_get_string_len(packet, &off, 13);
+
+    /* scramble_1 + scramble_2 == scramble
+     * a len-encoded string
+     */
+    g_string_truncate(recv_sock->scramble_buf, 0);
+    g_string_append_len(recv_sock->scramble_buf, scramble_1, 8);
+    g_string_append_len(recv_sock->scramble_buf, scramble_2, 13);
+
+    g_free(scramble_1);
+    g_free(scramble_2);
+
+    g_string_truncate(recv_sock->auth_handshake_packet, 0);
+    g_string_append_len(recv_sock->auth_handshake_packet, packet->str + NET_HEADER_SIZE, packet->len - NET_HEADER_SIZE);
+
+    /* move the packets from the server queue*/
+
+    recv_sock->packet_len = PACKET_LEN_UNSET;
+    g_queue_delete_link(recv_sock->recv_queue->chunks, chunk);
+    g_string_free(packet, TRUE);
+
+	return (network_socket_retval_t)0;
+}
+
+NETWORK_MYSQLD_ASYNC_PLUGIN_PROTO(proxy_async_create_auth)
+{
+	GString *packet;
+	network_socket *send_sock;
+	char scrambled[256];
+	GString *new_packet;
+
+	send_sock = con->server;
+
+	new_packet = g_string_new(NULL);
+
+	//4 byte CLIENT_FLAGS
+	network_mysqld_proto_append_int32(new_packet, (gunit32)con->config->client_flags);
+
+	//4 byte packet length
+	network_mysqld_proto_append_int32(new_packet, (gunit32)0x01000000);
+
+	//1 byte CHARSET
+	network_mysqld_proto_append_int8(new_packet, (gunit8)con->config->charset);
+
+	/* 23 byte zero buffer*/
+	network_mysqld_proto_append_int8(new_packet, (gunit8)0);
+	network_mysqld_proto_append_int8(new_packet, (gunit16)0);
+	network_mysqld_proto_append_int8(new_packet, (gunit32)0);
+	network_mysqld_proto_append_int8(new_packet, (gunit32)0);
+	network_mysqld_proto_append_int8(new_packet, (gunit32)0);
+	network_mysqld_proto_append_int8(new_packet, (gunit32)0);
+	network_mysqld_proto_append_int8(new_packet, (gunit32)0);
+
+	/* N byte USERNAME*/
+	g_string_append(new_packet, con->config->default_username->str, con->config->default_username-len);
+	g_string_append_c(new_packet, '\0');
+
+	/* N byte scrambled password */
+	memset((void *)scrambled, 0, sizeof(scrambled));
+	g_string_truncate(send_sock->scramble_buf, SCRAMBLE_LENGTH);
+	g_string_append_c(send_sock->scramble_buf, '\0');
+
+	g_string_append_c(con->config->default_password, '\0');
+	msyqld_scramble(scrambled, send_sock->scramble_buf->str, con->config->default_password->str);
+	g_string_truncate(con->config->default_password, conf->config->default_password->len - 1);
+
+	g_string_truncate(send_sock->scrambled_password, 0);
+	g_string_append_len(send_sock->scrambled_password, scrambled, SCRAMBLE_LENGTH);
+
+	g_string_append_c(new_packet, SCRAMBLE_LENGTH);
+	g_string_append_len(new_packet, scrambled, SCRAMBLE_LENGTH);
+
+	if( (NULL 1= con->config->default_db->str) && (strlen(con->config->default_db->str) != 0))
+	{
+		g_string_append_len(new_packet, con->config->default_db->str, con->config->default_db->len);
+		g_string_append_c(new_packet, '\0');
+	}
+
+	packet = g_string_new(NULL);
+	network_mysqld_proto_append_int16(packet, (gunit16)new_packet->len);
+	network_mysqld_proto_append_int8(packet, 0);
+	network_mysqld_proto_append_int8(packet, 0x1);
+	g_string_append_len(packet, new_packet->str, new_packet_len);
+	g_string_free(new_packet, TRUE);
+
+	network_queue_append_chunk(send_sock0>send_queue, pakcet);
+
+	return (network_socket_retval_t)0;
+}
+
+
+NETWORK_MYSQLD_ASYNC_PLUGIN_PROTO(proxy_async_read_auth_result)
+{
+	GString *packet;
+	GList *chunk;
+	network_socket *recv_sock;
+
+	recv_sock = con->server;
+
+	chunk = recv_sock->recv_queue->chunks->tail;
+	packet = (GString *)(chunk->data);
+
+	/*we aren't finished yet*/
+	if(packet->len != recv_sock->packet_len + NET_HEADER_SIZE)
+	{
+		return NETWORK_SOCKET_SUCCESS;
+	}
+
+	recv_sock->packet_len = PACKET_LEN_UNSET;
+
+	/* caller already has a pointer and will free
+	g_string_free(packet, TRUE);
+	g_queue_delete_link(recv_sock->recv_queue->chunks, chunk);
+	*/
+
+	return (network_socket_retval_t)0;
+}
+
+backend_connection_state_t *network_mysqld_async_con_init(chassis *srv)
+{
+	backend_connection_state_t *backend_con;
+
+	backend_con = g_new0(backend_connection_state_t, 1);
+
+	backend_con->srv = srv;
+	backend_con->server = network_socket_init();
+	backend_con->state = CON_STATE_ASYNC_INIT;
+
+    backend_con->plugins.con_init                      = proxy_async_init;
+	backend_con->plugins.con_read_handshake            = proxy_async_read_handshake;
+	backend_con->plugins.con_create_auth			   = proxy_async_create_auth;
+	backend_con->plugins.con_send_auth                 = NULL;
+	backend_con->plugins.con_read_auth_result          = proxy_async_read_auth_result;
+
+	return backend_con;
+}
+
+GList *node_get_all_database()
+{
+	GList *glist ;
+
+	return NULL;
+}
+
 /**init the backend pool memory according to the nodes_inf which is loaded by the NodeInf mode*/
 int network_backends_connection_pool_init(chassis *srv)
 {
@@ -245,7 +535,7 @@ int network_backends_connection_pool_init(chassis *srv)
 			/*
 			network_backend_t *backend = network_backend_new();
 
-			backend->node_datanode_inf_t = node_inf;
+			backend->node_inf = node_inf;
 			*/
 			if (-1 == network_backends_add_by_nodeinf(bs, node_inf)) 
 			{
@@ -254,7 +544,6 @@ int network_backends_connection_pool_init(chassis *srv)
 		}
 	}
 }
-
 
 /**init the backend connection*/
 int network_connection_pool_very_init(chassis *srv)
@@ -272,15 +561,15 @@ int network_connection_pool_very_init(chassis *srv)
     {
         //backend = (node_datanode_inf_t *)(g_list_nth(database_list, i));      /*to be set*/
         backend = (network_backend_t *)(backends->pdata[i]);
-        if( NULL != backend )
+        if( NULL != backend && NULL != backend->node_inf)
         {
         	min_conn = backend->node_inf->min;
             for(j = 0; j < min_conn; j++)
             {
                 pbcs = network_mysqld_async_con_init(srv);
                 pbcs->node_inf = backend->node_inf;
-                pbcs->server->addr = backend->addr;
-                pbcs->server->addr.str = g_strdup(backend->addr.str);
+                pbcs->server->dst = backend->addr;
+                pbcs->server->dst->name = g_strdup(backend->addr->name);
 
                 if(0 != network_socket_connect(pbcs->server))
                 {
@@ -290,7 +579,7 @@ int network_connection_pool_very_init(chassis *srv)
                     network_mysqld_async_con_state_free(pbcs);
                     break;
                 }
-                g_message("%s.%d SOCKET=%d: new backend connection, remote=%s:%s.", __FILE__, __LINE__,  pbcs->server->fd, pbcs->server->addr.str, pbcs->server->default_db->str);
+                g_message("%s.%d SOCKET=%d: new backend connection, remote=%s:%s.", __FILE__, __LINE__,  pbcs->server->fd, pbcs->server->dst->name, pbcs->server->default_db->str);
                 if( backend->state != BACKEND_STATE_UP)
                 {
                     backend->state = BACKEND_STATE_UP;
@@ -303,10 +592,10 @@ int network_connection_pool_very_init(chassis *srv)
                 
                 /*ready to read data from server*/
                 event_set(&(pbcs->server->event), pbcs->server->fd, EV_READ, network_mysqld_async_con_handle, pbcs);
-                event_base(srv->event_base, &(pbcs->server->event));
+                event_base_set(srv->event_base, &(pbcs->server->event));
                 event_add(&(pbcs->server->event), NULL);
                 
-                g_ptr_array_add(backend->pending_dbconn);
+                g_ptr_array_add(backend->pending_dbconn, pbcs);
                 
                 pbcs->state = CON_STATE_ASYNC_READ_HANDSHAKE;
                 
@@ -316,24 +605,6 @@ int network_connection_pool_very_init(chassis *srv)
     }
 }
 
-backend_connection_state_t *network_mysqld_async_con_init(chassis *srv)
-{
-	backend_connection_state_t *backend_con;
-
-	backend_con = g_new0(backend_connection_state_t, 1);
-
-	backend_con->srv = srv;
-	backend_con->server = network_socket_init();
-	backend_con->state = CON_STATE_ASYNC_INIT;
-
-    con->plugins.con_init                      = proxy_async_init;
-	con->plugins.con_read_handshake            = proxy_async_read_handshake;
-	con->plugins.con_create_auth			   = proxy_async_create_auth;
-	con->plugins.con_send_auth                 = proxy_async_send_auth;
-	con->plugins.con_read_auth_result          = proxy_async_read_auth_result;
-
-	return backend_con;
-}
 
 int network_mysqld_async_con_state_free(backend_connection_state_t *backend_con)
 {
@@ -343,9 +614,9 @@ int network_mysqld_async_con_state_free(backend_connection_state_t *backend_con)
 	/*remove the backend_connection_state_t from the PtrArray of pending_dbconn*/
 	proxy_connection_pool_del(backend_con);
 
-	if(bcakend_con)
+	if(backend_con)
 	{
-		if(bakcend_con->server)
+		if(backend_con->server)
 			network_socket_free(backend_con->server);
 
 		g_free(backend_con);
@@ -1175,6 +1446,7 @@ static const char *get_event_name(int events)
  	async_con_state             ostate;
  	backend_connection_state_t *con = (backend_connection_state_t *)user_data;
  	chassis                    *srv = con->srv;
+    NETWORK_MYSQLD_ASYNC_PLUGIN_FUNC(func) = NULL;
  	int                         ret;
  	GList                      *chunk = NULL;
 
@@ -1190,7 +1462,7 @@ static const char *get_event_name(int events)
  		if(ioctl(event_fd, FIONREAD, &b))
  		{
  			g_error("ioctl(%d, FIONREAD, ...) failed: %s", event_fd, g_strerror(errno));
- 			con->state = CNO_STATE_ASYNC_ERROR;
+ 			con->state = CON_STATE_ASYNC_ERROR;
  		}
  		else if(b != 0)
  		{
@@ -1202,9 +1474,9 @@ static const char *get_event_name(int events)
  				return ;
  			else
  			{
- 				con->state = CNO_STATE_ASYNC_ERROR;
- 				g_error("$s.%d: CNO_STATE_ASYNC_ERROR EV_READ addr=%s error=%d error:%s",
- 				 __FILE__, __LINE__, con->server->add->name, errno, g_strerror(errno));
+ 				con->state = CON_STATE_ASYNC_ERROR;
+ 				g_error("$s.%d: CON_STATE_ASYNC_ERROR EV_READ addr=%s error=%d error:%s",
+ 				 __FILE__, __LINE__, con->server->dst->name, errno, g_strerror(errno));
  			}
  			return ;
  		}
@@ -1212,6 +1484,8 @@ static const char *get_event_name(int events)
 
  	do
  	{
+ 		struct timeval timeout;
+
  		ostate = con->state;
 
  		if(con->state != CON_STATE_ASYNC_INIT)
@@ -1233,10 +1507,10 @@ static const char *get_event_name(int events)
  					}
  				}
  			}
- 			case CNO_STATE_ASYNC_ERROR:
+ 			case CON_STATE_ASYNC_ERROR:
  			{
- 				g_error("CNO_STATE_ASYNC_ERROR %s failed", 
- 					((con->server != NULL) && (con->server->add->name != NULL)) ?  con->server->addr->name : "srv", g_strerror(errno));
+ 				g_error("CON_STATE_ASYNC_ERROR %s failed", 
+ 					((con->server != NULL) && (con->server->dst->name != NULL)) ?  con->server->dst->name : "srv", g_strerror(errno));
 
  				network_mysqld_async_con_state_free(con);
  			}
@@ -1283,7 +1557,7 @@ static const char *get_event_name(int events)
  					case NETWORK_SOCKET_SUCCESS:
  						break;
  					case NETWORK_SOCKET_ERROR:
- 						con->state = CON_STATE_ASYNC_ERROR:
+ 						con->state = CON_STATE_ASYNC_ERROR;
  						g_warning("%s.%d: CON_STATE_ASYNC_READ_HANDSHAKE con_read_handshake failed returned an error", __FILE__, __LINE__);
  						break;
  					default:
@@ -1308,10 +1582,10 @@ static const char *get_event_name(int events)
  						if(chunk != NULL)
  						{
  							/*con->server->packet_len = PACKET_LEN_UNSET;*/
- 							g_string_free((GString *)(chunk->data), TURE);
+ 							g_string_free((GString *)(chunk->data), TRUE);
  							g_queue_delete_link(con->server->send_queue->chunks, chunk);
  						}
- 						con->state = CNO_STATE_ASYNC_ERROR;
+ 						con->state = CON_STATE_ASYNC_ERROR;
  						g_warning("%s.%d: plugin_call(CON_STATE_ASYNC_CREATE_AUTH) returned an error", __FILE__, __LINE__);
  					}
  					default:
@@ -1324,7 +1598,7 @@ static const char *get_event_name(int events)
  					if(chunk != NULL)
  					{
  						g_queue_delete_link(con->server->recv_queue->chunks, chunk);
- 						g_string_free((GString *)(chunk->data), TURE);
+ 						g_string_free((GString *)(chunk->data), TRUE);
  					}
  				}
  				con->state = CON_STATE_ASYNC_SEND_AUTH;
@@ -1344,7 +1618,7 @@ static const char *get_event_name(int events)
  						return;
  					case NETWORK_SOCKET_ERROR_RETRY:
  					case NETWORK_SOCKET_ERROR:
- 						con->state = CNO_STATE_ASYNC_ERROR;
+ 						con->state = CON_STATE_ASYNC_ERROR;
  						break;
  				}
  				if(con->state != ostate) /*the state has changed like CON_STATE_ASYNC_ERROR*/
@@ -1392,23 +1666,23 @@ static const char *get_event_name(int events)
  						break;
  					case MYSQLD_PACKET_ERR:
  						g_warning("");
- 						con->state = CNO_STATE_ASYNC_ERROR;
+ 						con->state = CON_STATE_ASYNC_ERROR;
  						break;
  					case MYSQLD_PACKET_EOF:
  						con->state = CON_STATE_ASYNC_READ_AUTH_OLD_PASSWORD;
  						break;
  					default:
  						g_error("");
- 						con->state = CNO_STATE_ASYNC_ERROR;
+ 						con->state = CON_STATE_ASYNC_ERROR;
  						break;
  				}
  				g_queue_delete_link(con->server->recv_queue->chunks, chunk);
- 				g_string_free((GString *)(con->server->recv_queue->chunks->head->data), TURE);
+ 				g_string_free((GString *)(con->server->recv_queue->chunks->head->data), TRUE);
 
- 				if(con->state == CNO_STATE_ASYNC_ERROR)
+ 				if(con->state == CON_STATE_ASYNC_ERROR)
  					break;
 
- 				proxy_connection_pool_add(con);
+ 				/*proxy_connection_pool_add(con);*/
  				break;
  			}
  			case CON_STATE_ASYNC_READ_SELECT_DB:
@@ -1418,7 +1692,7 @@ static const char *get_event_name(int events)
  		}
  		event_fd = -1;
  		events = 0;
- 	}while( ostate != con->state )
+ 	}while( ostate != con->state );
  }
 /*end of add*/
 
@@ -2601,5 +2875,4 @@ int network_mysqld_con_send_resultset(network_socket *con, GPtrArray *fields, GP
 
 	return 0;
 }
-
 

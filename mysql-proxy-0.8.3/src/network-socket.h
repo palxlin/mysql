@@ -95,9 +95,20 @@ typedef struct {
 	 */
 	network_mysqld_auth_challenge *challenge;
 	network_mysqld_auth_response  *response;
+/*begin of add*/
+	/**
+	 * data extracted from the handshake 
+	 * all server-side only
+	 */
+	guint32 mysqld_version;  /**< numberic version of the version string */
+	guint32 thread_id;       /**< connection-id, set in the handshake packet */
+	GString *scramble_buf;   /**< the 21byte scramble-buf */
+	GString *username;       /**< username of the authed connection */
+	GString *scrambled_password;  /**< scrambled_pass used to auth */
+	GString *scrambled_hash;  /**< scrambled_hash used to send to the client for auth */
 
 	gboolean is_authed;           /** did a client already authed this connection */
-
+/*end of add*/
 	/**
 	 * store the default-db of the socket
 	 *

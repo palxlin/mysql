@@ -451,6 +451,8 @@ int main_cmdline(int argc, char **argv) {
 		log->min_lvl = G_LOG_LEVEL_CRITICAL;
 	}
 
+	g_message("log_filename[%s], log_level[%s]", frontend->log_filename, frontend->log_level);
+	g_message("frontend->plugin_names[0][%s]", frontend->plugin_names);
 	/*
 	 * the MySQL Proxy should load 'admin' and 'proxy' plugins
 	 */

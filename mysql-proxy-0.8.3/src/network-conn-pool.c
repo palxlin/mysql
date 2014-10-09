@@ -26,6 +26,11 @@
 #include "glib-ext.h"
 #include "sys-pedantic.h"
 
+/*begin of add*/
+#define C(x) x, sizeof(x) - 1
+#define S(x) x->str, x->len
+/*end of add*/
+
 /** @file
  * connection pools
  *
@@ -270,19 +275,20 @@ void network_connection_pool_remove(network_connection_pool *pool, network_conne
 /*begin of add*/
 int proxy_connection_pool_del(backend_connection_state_t *pbcs)
 {
+	gint i = 0;
 	chassis *srv = pbcs->srv;
 	network_socket *server = pbcs->server;
 
 	network_backend_t *backend = NULL;
 
-	if(server->addr.str == NULL)
+	if(server->dst->name == NULL)
 		return 0;
 
 	GPtrArray *backends = (GPtrArray *)srv->priv->backends->backends;
-	for(gint i = 0; i < backends->len; i++)
+	for( i = 0; i < backends->len; i++)
 	{
 		backend = (network_backend_t *)(backends->pdata[i]);
-		if( strcmp(backend->addr->name, server->addr->name) == 0)
+		if( strleq( S(backend->addr->name), S(server->dst->name)))
 		{
 			break;
 		}
@@ -291,7 +297,7 @@ int proxy_connection_pool_del(backend_connection_state_t *pbcs)
 
 	if(backend == NULL)
 	{
-		g_debug("%s.%d can't find pool for server = %s", __FILE__, __LINE__, server->addr->name);
+		g_debug("%s.%d can't find pool for server = %s", __FILE__, __LINE__, server->dst->name);
 		return 0;
 	}
 
