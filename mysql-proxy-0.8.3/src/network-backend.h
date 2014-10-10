@@ -43,6 +43,23 @@ typedef enum {
 	BACKEND_TYPE_RO
 } backend_type_t;
 
+/*begin of add*/
+typedef struct backend_config_t{
+	GString *address;       		/** IP/Hostname address */
+	
+	GString *default_username;	/* default username */ 
+	GString *default_password;	/* default password */ 
+	GString *default_db;		/* default database */ 
+
+	int		max_conn_pool;
+
+	guint32 client_flags;
+	gchar 	charset;
+
+	int		status;				/* either default or current */
+} backend_config_t;
+/*end of add*/
+
 typedef struct {
 	network_address *addr;
    
@@ -63,23 +80,6 @@ typedef struct {
 
 	GString *uuid;           /**< the UUID of the backend */
 } network_backend_t;
-
-/*begin of add*/
-typedef struct backend_config_t {
-	GString *address;       		/** IP/Hostname address */
-	
-	GString *default_username;	/* default username */ 
-	GString *default_password;	/* default password */ 
-	GString *default_db;		/* default database */ 
-
-	int		max_conn_pool;
-
-	guint32 client_flags;
-	gchar 	charset;
-
-	int		status;				/* either default or current */
-} backend_config_t;
-/*end of add*/
 
 typedef network_backend_t backend_t G_GNUC_DEPRECATED;
 

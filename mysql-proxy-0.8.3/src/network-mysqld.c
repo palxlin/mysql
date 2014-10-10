@@ -62,6 +62,9 @@
 
 #include <mysql.h>
 #include <mysqld_error.h>
+/*begin of add*/
+#include <mysql_com.h>
+/*end of add*/
 
 #include "network-debug.h"
 #include "network-mysqld.h"
@@ -303,7 +306,7 @@ NETWORK_MYSQLD_ASYNC_PLUGIN_PROTO(proxy_async_read_handshake)
 		recv_sock->packet_len = PACKET_LEN_UNSET;
 		g_string_free(packet, TRUE);
 		g_queue_delete_link(recv_sock->recv_queue->chunks, chunk);
-		reutrn NETWORK_SOCKET_ERROR;
+		return NETWORK_SOCKET_ERROR;
 	}
 
 	/* scan for a \0*/
@@ -343,20 +346,20 @@ NETWORK_MYSQLD_ASYNC_PLUGIN_PROTO(proxy_async_read_handshake)
 
 	off++;  /*ske the \0 */
 
-	recv_sock->thread_id = network_mysqld_proto_get_int32(packet, &off);
+	recv_sock->thread_id = network_mysqld_proto_gstring_get_int32(packet, &off);
 
 	/**
 	* get the scramble buf
 	* 8 byte here and some the other 12 somewhen later
 	*/
-	scramble_1 = network_mysqld_proto_get_string_len(packet, &off, 8);
-	network_mysqld_proto_skip(packet, &off, 1);
+	scramble_1 = network_mysqld_proto_gstring_get_string_len(packet, &off, 8);
+	network_mysqld_proto_gstring_skip(packet, &off, 1);
 
 	/* we can't sniff compressed packets nor do we support SSL*/
 	packet->str[off] &= ~(CLINET_COMPRESS);
 	packet->str[off] &= ~(CLIENT_SSL);
 
-    server_cap = network_mysqld_proto_get_int16(packet, &off);
+    server_cap = network_mysqld_proto_gstring_get_int16(packet, &off);
 
     if(server_cap & CLINET_COMPRESS)
     {
@@ -367,12 +370,12 @@ NETWORK_MYSQLD_ASYNC_PLUGIN_PROTO(proxy_async_read_handshake)
     	packet->str[off-1] &= ~(CLIENT_SSL >> 8);
     }
 
-    server_lang = network_mysqld_proto_get_int8(packet, &off);
-    server_status = network_mysqld_proto_get_int16(packet, &off);
+    server_lang = network_mysqld_proto_gstring_get_int8(packet, &off);
+    server_status = network_mysqld_proto_gstring_get_int16(packet, &off);
 
-    network_mysqld_proto_skip(packet, &off, 13);
+    network_mysqld_proto_gstring_skip(packet, &off, 13);
 
-    scramble_2 = netowrk_mysqld_proto_get_string_len(packet, &off, 13);
+    scramble_2 = network_mysqld_proto_gstring_get_string_len(packet, &off, 13);
 
     /* scramble_1 + scramble_2 == scramble
      * a len-encoded string
@@ -396,6 +399,11 @@ NETWORK_MYSQLD_ASYNC_PLUGIN_PROTO(proxy_async_read_handshake)
 	return (network_socket_retval_t)0;
 }
 
+void mysql_scramble(char *to, const char *message, const char *password)
+{
+	scramble(to, message, password);
+}
+
 NETWORK_MYSQLD_ASYNC_PLUGIN_PROTO(proxy_async_create_auth)
 {
 	GString *packet;
@@ -408,25 +416,25 @@ NETWORK_MYSQLD_ASYNC_PLUGIN_PROTO(proxy_async_create_auth)
 	new_packet = g_string_new(NULL);
 
 	//4 byte CLIENT_FLAGS
-	network_mysqld_proto_append_int32(new_packet, (gunit32)con->config->client_flags);
+	network_mysqld_proto_append_int32(new_packet, (guint32)con->config->client_flags);
 
 	//4 byte packet length
-	network_mysqld_proto_append_int32(new_packet, (gunit32)0x01000000);
+	network_mysqld_proto_append_int32(new_packet, (guint32)0x01000000);
 
 	//1 byte CHARSET
-	network_mysqld_proto_append_int8(new_packet, (gunit8)con->config->charset);
+	network_mysqld_proto_append_int8(new_packet, (guint8)con->config->charset);
 
 	/* 23 byte zero buffer*/
-	network_mysqld_proto_append_int8(new_packet, (gunit8)0);
-	network_mysqld_proto_append_int8(new_packet, (gunit16)0);
-	network_mysqld_proto_append_int8(new_packet, (gunit32)0);
-	network_mysqld_proto_append_int8(new_packet, (gunit32)0);
-	network_mysqld_proto_append_int8(new_packet, (gunit32)0);
-	network_mysqld_proto_append_int8(new_packet, (gunit32)0);
-	network_mysqld_proto_append_int8(new_packet, (gunit32)0);
+	network_mysqld_proto_append_int8(new_packet, (guint8)0);
+	network_mysqld_proto_append_int16(new_packet, (guint16)0);
+	network_mysqld_proto_append_int32(new_packet, (guint32)0);
+	network_mysqld_proto_append_int32(new_packet, (guint32)0);
+	network_mysqld_proto_append_int32(new_packet, (guint32)0);
+	network_mysqld_proto_append_int32(new_packet, (guint32)0);
+	network_mysqld_proto_append_int32(new_packet, (guint32)0);
 
 	/* N byte USERNAME*/
-	g_string_append(new_packet, con->config->default_username->str, con->config->default_username-len);
+	g_string_append_len(new_packet, con->config->default_username->str, con->config->default_username->len);
 	g_string_append_c(new_packet, '\0');
 
 	/* N byte scrambled password */
@@ -435,8 +443,8 @@ NETWORK_MYSQLD_ASYNC_PLUGIN_PROTO(proxy_async_create_auth)
 	g_string_append_c(send_sock->scramble_buf, '\0');
 
 	g_string_append_c(con->config->default_password, '\0');
-	msyqld_scramble(scrambled, send_sock->scramble_buf->str, con->config->default_password->str);
-	g_string_truncate(con->config->default_password, conf->config->default_password->len - 1);
+	mysql_scramble(scrambled, send_sock->scramble_buf->str, con->config->default_password->str);
+	g_string_truncate(con->config->default_password, con->config->default_password->len - 1);
 
 	g_string_truncate(send_sock->scrambled_password, 0);
 	g_string_append_len(send_sock->scrambled_password, scrambled, SCRAMBLE_LENGTH);
@@ -444,20 +452,20 @@ NETWORK_MYSQLD_ASYNC_PLUGIN_PROTO(proxy_async_create_auth)
 	g_string_append_c(new_packet, SCRAMBLE_LENGTH);
 	g_string_append_len(new_packet, scrambled, SCRAMBLE_LENGTH);
 
-	if( (NULL 1= con->config->default_db->str) && (strlen(con->config->default_db->str) != 0))
+	if( (NULL != con->config->default_db->str) && (strlen(con->config->default_db->str) != 0))
 	{
 		g_string_append_len(new_packet, con->config->default_db->str, con->config->default_db->len);
 		g_string_append_c(new_packet, '\0');
 	}
 
 	packet = g_string_new(NULL);
-	network_mysqld_proto_append_int16(packet, (gunit16)new_packet->len);
+	network_mysqld_proto_append_int16(packet, (guint16)new_packet->len);
 	network_mysqld_proto_append_int8(packet, 0);
 	network_mysqld_proto_append_int8(packet, 0x1);
-	g_string_append_len(packet, new_packet->str, new_packet_len);
+	g_string_append_len(packet, new_packet->str, new_packet->len);
 	g_string_free(new_packet, TRUE);
 
-	network_queue_append_chunk(send_sock0>send_queue, pakcet);
+	network_queue_append_chunk(send_sock->send_queue, packet);
 
 	return (network_socket_retval_t)0;
 }

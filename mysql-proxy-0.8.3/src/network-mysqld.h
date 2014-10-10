@@ -179,8 +179,10 @@ typedef struct {
 	NETWORK_MYSQLD_PLUGIN_FUNC(con_timeout);
 } network_mysqld_hooks;
 
-#define NETWORK_MYSQLD_ASYNC_PLUGIN_FUNC(x) network_socket_retval_t (*x)(chassis *, network_mysqld_con *)
-#define NETWORK_MYSQLD_ASYNC_PLUGIN_PROTO(x) static network_socket_retval_t x(chassis G_GNUC_UNUSED *chas, network_mysqld_con *con)
+typedef struct backend_connection_state_t backend_connection_state_t;
+
+#define NETWORK_MYSQLD_ASYNC_PLUGIN_FUNC(x) network_socket_retval_t (*x)(chassis *, backend_connection_state_t *)
+#define NETWORK_MYSQLD_ASYNC_PLUGIN_PROTO(x) static network_socket_retval_t x(chassis G_GNUC_UNUSED *chas, backend_connection_state_t *con)
 
 typedef struct {
 	NETWORK_MYSQLD_ASYNC_PLUGIN_FUNC(con_init);
@@ -436,14 +438,14 @@ typedef enum {
     CON_STATE_ASYNC_NONE
 } async_con_state;
 
-typedef struct {
+struct backend_connection_state_t{
     async_con_state	    state;
 
 	network_mysqld_async_hooks plugins;
 	network_socket		*server;	              /* database connection */
 	chassis             *srv; 		              /* our srv object */
 	GTimeVal 		    lastused;                 /** last time this object was talked to*/
-	/*backend_config 		*config;	               configuration used to initiate the connection */
+	backend_config_t	*config;	              /* configuration used to initiate the connection*/
 	node_database_inf_t *node_inf;
 
 	void 				*plugin_con_state;	          /*global connection states/backend*/
@@ -454,7 +456,7 @@ typedef struct {
 	struct timeval connect_timeout;
 	struct timeval read_timeout;
 	struct timeval write_timeout;
-} backend_connection_state_t;
+} ;
 
 void network_mysqld_async_con_handle(int event_fd, short events, void *user_data);
 /*end of add*/

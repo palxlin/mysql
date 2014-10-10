@@ -83,6 +83,10 @@ typedef struct {
 	guint8   last_packet_id; /**< internal tracking of the packet_id's the automaticly set the next good packet-id */
 	gboolean packet_id_is_reset; /**< internal tracking of the packet_id sequencing */
 
+	/*begin of add*/
+	guint32 packet_len; /**< the packet_len is a 24bit unsigned int */
+	/*end of add*/
+
 	network_queue *recv_queue;
 	network_queue *recv_queue_raw;
 	network_queue *send_queue;
@@ -107,6 +111,7 @@ typedef struct {
 	GString *scrambled_password;  /**< scrambled_pass used to auth */
 	GString *scrambled_hash;  /**< scrambled_hash used to send to the client for auth */
 
+    GString *auth_handshake_packet;  /*store the auth-handshake packet to simulate a login*/
 	gboolean is_authed;           /** did a client already authed this connection */
 /*end of add*/
 	/**

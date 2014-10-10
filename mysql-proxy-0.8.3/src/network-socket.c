@@ -809,3 +809,11 @@ network_socket_retval_t network_socket_to_read(network_socket *sock) {
 	}
 
 }
+
+/*begin of add*/
+int network_queue_append_chunk(network_queue *queue, GString *chunk) {
+        g_queue_push_tail(queue->chunks, chunk);
+
+        return 0;
+}
+/*end of add*/

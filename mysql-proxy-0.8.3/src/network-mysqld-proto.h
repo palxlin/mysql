@@ -58,6 +58,7 @@
 #define MYSQLD_PACKET_ERR  (0xff) /* 0xff */
 
 #define PACKET_LEN_MAX     (0x00ffffff)
+#define PACKET_LEN_UNSET   (0xffffffff)
 
 #include "network-packet.h" /* for backward compat, as network_packet_new() was previously defined here */
 

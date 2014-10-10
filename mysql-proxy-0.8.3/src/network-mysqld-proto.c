@@ -1117,3 +1117,60 @@ int network_mysqld_proto_skip_network_header(network_packet *packet) {
 }
 
 /*@}*/
+
+
+/*begin of add*/
+void network_mysqld_proto_gstring_skip(GString *packet, guint *_off, gsize size) {
+	g_assert(*_off + size <= packet->len);
+	
+	*_off += size;
+}
+
+guint64 network_mysqld_proto_gstring_get_int_len(GString *packet, guint *_off, gsize size) {
+	gsize i;
+	int shift;
+	guint64 r = 0;
+	guint off = *_off;
+
+	g_assert(*_off < packet->len);
+	if (*_off + size > packet->len) {
+		CRASHME();
+	}
+	g_assert(*_off + size <= packet->len);
+
+	for (i = 0, shift = 0; i < size; i++, shift += 8) {
+		r += (unsigned char)(packet->str[off + i]) << shift;
+	}
+
+	*_off += size;
+
+	return r;
+}
+
+guint8 network_mysqld_proto_gstring_get_int8(GString *packet, guint *_off) {
+	return network_mysqld_proto_get_int_len(packet, _off, 1);
+}
+
+guint16 network_mysqld_proto_gstring_get_int16(GString *packet, guint *_off) {
+	return network_mysqld_proto_get_int_len(packet, _off, 2);
+}
+
+guint32 network_mysqld_proto_gstring_get_int32(GString *packet, guint *_off) {
+	return network_mysqld_proto_get_int_len(packet, _off, 4);
+}
+
+gchar *network_mysqld_proto_gstring_get_string_len(GString *packet, guint *_off, gsize len) {
+	gchar *str;
+
+	g_assert(*_off < packet->len);
+	if (*_off + len > packet->len) {
+		g_critical("packet-offset out of range: %u + "F_SIZE_T" > "F_SIZE_T, *_off, len, packet->len);
+	}
+
+	str = len ? g_strndup(packet->str + *_off, len) : NULL; 
+
+	*_off += len;
+
+	return str;
+}
+/*end of add*/
