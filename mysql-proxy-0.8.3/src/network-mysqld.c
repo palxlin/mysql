@@ -399,10 +399,31 @@ NETWORK_MYSQLD_ASYNC_PLUGIN_PROTO(proxy_async_read_handshake)
 	return (network_socket_retval_t)0;
 }
 
+/*begin of add for mysql_wrapper*/
 void mysql_scramble(char *to, const char *message, const char *password)
 {
 	scramble(to, message, password);
 }
+void mysql_make_scramble(char *to, const char *password)
+{
+    char buf[256];
+
+	make_scrambled_password(buf, password);
+
+	get_salt_from_password((uint8_t*)to, buf);
+}
+
+my_bool mysql_is_valid(const char *client, const char *scramble, const uint8_t *hash_stage2)
+{
+	return check_scramble(client, scramble, hash_stage2);
+}
+void mysql_create_random_string(char *to, uint16_t length)
+{
+	struct rand_struct rand_st;
+	randominit(&rand_st, time(NULL), time(NULL)*(long)to);
+	create_random_string(to, length, &rand_st);
+}
+/*end of add for mysql_wrapper*/
 
 NETWORK_MYSQLD_ASYNC_PLUGIN_PROTO(proxy_async_create_auth)
 {
@@ -524,6 +545,74 @@ GList *node_get_all_database()
 	return NULL;
 }
 
+#define SERVER_MAJ		1
+#define SERVER_MIN		0
+#define SERVER_PATCH	0
+const char szSERVER_VERSION[] = "1.0.0-upProxy";
+static int thread_id = 0;
+network_socket_retval_t proxy_create_handshake(chassis *srv, network_mysqld_con *con)
+{
+	GString *packet, *new_packet;
+	network_socket *send_sock;
+	char scarmble_buf[SCRAMBLE_LENGTH+1];
+
+	send_sock = con->client;
+
+	new_packet = g_string_new(NULL);
+
+	network_mysqld_proto_append_int8(new_packet, (guint)PROTOCOL_VERSION);
+
+	g_string_append_len(new_packet, szSERVER_VERSION, strlen(szSERVER_VERSION)+1);
+	send_sock->mysqld_version = SERVER_MAJ * 10000 + SERVER_MIN * 100 + SERVER_PATCH;
+
+	/*THREAD_ID - need to know how to keep this in sequence */
+	send_sock->thread_id = ++thread_id;
+	network_mysqld_proto_append_int32(new_packet, (guint32)thread_id);
+
+	mysql_create_random_string(scarmble_buf, sizeof(scarmble_buf) - 1);
+
+	g_string_truncate(send_sock->scramble_hash, 0);
+	g_string_append_len(send_sock->scramble_buf, scramble_buf, sizeof(scramble_buf));
+
+	/*write first part of the scrambled password*/
+	g_string_append_len(new_packet, scramble_buf, 8);
+
+    /*1 byte filler*/
+	network_mysqld_proto_append_int8(new_packet, (guint8)0);
+
+	/*2 byte server cap*/
+	network_mysqld_proto_append_int16( new_packet, (guint16)srv->db_config.client_flags);
+
+	// 1 byte language
+	network_mysqld_proto_append_int8( new_packet, (guint8)srv->db_config.charset);
+
+	// 2 byte server status - eg. SERVER_STATUS_AUTOCOMMIT 
+	network_mysqld_proto_append_int16( new_packet, (guint16)SERVER_STATUS_AUTOCOMMIT);
+
+	// 13 bytes of filler
+	network_mysqld_proto_append_int32( new_packet, (guint32)0);
+	network_mysqld_proto_append_int32( new_packet, (guint32)0);
+	network_mysqld_proto_append_int32( new_packet, (guint32)0);
+	g_string_append_c(new_packet, '\0');
+
+	// 13 bytes of 2nd part of the scrambled buffer
+	g_string_append_len(new_packet, scramble_buf+8, 13 );
+
+	packet = g_string_new(NULL);
+	network_mysqld_proto_append_int16( packet, (guint16)new_packet->len );
+	network_mysqld_proto_append_int8( packet, 0);
+	network_mysqld_proto_append_int8( packet, 0x0);
+	g_string_append_len(packet, new_packet->str, new_packet->len);
+
+	network_queue_append_chunk(send_sock->send_queue, packet);
+	g_string_free( new_packet, TRUE);
+
+	/* copy the pack to the client */
+	con->state = CON_STATE_SEND_HANDSHAKE;
+
+	return NETWORK_SOCKET_SUCCESS;
+}
+
 /**init the backend pool memory according to the nodes_inf which is loaded by the NodeInf mode*/
 int network_backends_connection_pool_init(chassis *srv)
 {
@@ -558,16 +647,13 @@ int network_connection_pool_very_init(chassis *srv)
 {
     gint i, j;
     gint min_conn;
-    //node_datanode_inf_t *node_inf = NULL;
+
     network_backend_t *backend = NULL;
     backend_connection_state_t *pbcs = NULL;
     
     GPtrArray *backends = (GPtrArray *)srv->priv->backends->backends;
-    //GList *database_list = (GList *)node_get_all_database();
-    //gnit total_nums = 2;    /* g_list_length(database_list) */
     for(i = 0; i < backends->len; i++)
     {
-        //backend = (node_datanode_inf_t *)(g_list_nth(database_list, i));      /*to be set*/
         backend = (network_backend_t *)(backends->pdata[i]);
         if( NULL != backend && NULL != backend->node_inf)
         {
@@ -1082,7 +1168,7 @@ network_socket_retval_t plugin_call(chassis *srv, network_mysqld_con *con, int s
 		func = con->plugins.con_init;
 
 		if (!func) { /* default implementation */
-			con->state = CON_STATE_CONNECT_SERVER;
+			con->state = CON_STATE_SEND_HANDSHAKE;
 		}
 		break;
 	case CON_STATE_CONNECT_SERVER:
@@ -1109,6 +1195,14 @@ network_socket_retval_t plugin_call(chassis *srv, network_mysqld_con *con, int s
 		func = con->plugins.con_read_auth;
 
 		break;
+    case CON_STATE_CREATE_AUTH_RESPONSE:
+        func = con->plugins.con_create_auth_result;
+        
+        if(!func)
+        {
+            con->state = CON_STATE_SEND_AUTH_RESULT;
+        }
+        break;
 	case CON_STATE_SEND_AUTH:
 		func = con->plugins.con_send_auth;
 
@@ -1446,6 +1540,70 @@ static const char *get_event_name(int events)
         return name + 1;
 }
 
+void plugin_con_state_free(plugin_con_state *st) {
+	if (!st) return;
+
+	g_free(st);
+}
+
+
+int proxy_connection_pool_add(backend_connection_state_t *pbcs)
+{
+    chassis *srv = pbcs->srv;
+    network_socket *server = pbcs->server;
+    network_backend_t *backend = NULL;
+    struct timeval tv;
+    size_t i;
+
+    /* con->server is already disconnected, get out*/
+    if(!server)
+    {
+    	return 0;
+    }
+
+    g_debug("%s.%d: add_pool server = %s", __FILE__, __LINE__, server->dst->name->str);
+
+    GPtrArray *backends = (GPtrArray *)srv->priv->backends->backends;
+    for(i = 0; i < backends->len; i++)
+    {
+    	backend = (network_backend_t *)(backends->pdata[i]);
+
+    	if( (strcmp(backend->addr->name->str, server->addr->name->str) == 0) && (strcmp(backend->config->default_db->str, server->default_db->str) == 0))
+        {
+        	break;
+        }	
+        backend = NULL;
+    }
+
+    if(backend == NULL)
+    {
+    	g_debug("%s.%d: can't find pool for server = %s", __FILE__, __LINE__, server->addr->name->str);
+    	return 0;
+    }
+
+    /*insert the server socket into the connection pool*/
+    /* 1 means autocommit while 0 means non auto commit*/
+    network_connection_pool_add(backend->pool, server， backend->node_datanode_inf_t->autocommit_type);
+
+    /*add the event to handle the poll if it times out*/
+    event_set(&(server->event), server->fd, EV_READ|EV_TIMEOUT, network_mysqld_con_idle_handle, server);
+    event_base_set(srv->event_base, &(server->event));
+    tv.tv_sec = 7200; /*default is 2 hours*/
+    tv.tv_usec = 0;
+    event_add(&(server->event), &tv);
+    g_debug("%s.%d: adding event EV_READ|EV_TIMEOUT for socket=%d", __FILE__, __LINE__, server->fd);
+
+    /*remove the entry from the pending_conn*/
+    if(g_ptr_array_remove(backend->pending_dbconn, pbcs) == FALSE)
+    	g_debug("%s.%d: internal error: g_ptr_array_remove failed", __FILE__, __LINE__);
+
+    plugin_con_state_free(pbcs->plugin_con_state);
+
+    g_free(pbcs);
+
+    return 0;
+}
+
 /**
  * handle the different states of the MySQL asynchronous connection protocol from the Proxy to the Database
  */
@@ -1690,7 +1848,7 @@ static const char *get_event_name(int events)
  				if(con->state == CON_STATE_ASYNC_ERROR)
  					break;
 
- 				/*proxy_connection_pool_add(con);*/
+ 				proxy_connection_pool_add(con);
  				break;
  			}
  			case CON_STATE_ASYNC_READ_SELECT_DB:
@@ -2066,8 +2224,8 @@ void network_mysqld_con_handle(int event_fd, short events, void *user_data) {
 				con->state = CON_STATE_ERROR;
 				break;
 			}
-			
-			if (con->state != ostate) break; /* the state has changed (e.g. CON_STATE_ERROR) */
+			/*
+			if (con->state != ostate) break; 
 
 			switch (plugin_call(srv, con, con->state)) {
 			case NETWORK_SOCKET_SUCCESS:
@@ -2079,9 +2237,23 @@ void network_mysqld_con_handle(int event_fd, short events, void *user_data) {
 				g_critical("%s.%d: plugin_call(CON_STATE_READ_AUTH) != NETWORK_SOCKET_SUCCESS", __FILE__, __LINE__);
 				con->state = CON_STATE_ERROR;
 				break;
-			}
+			}*/
+			con->state = CON_STATE_CREATE_AUTH_RESPONSE;
 
 			break; }
+		case CON_STATE_CREATE_AUTH_RESPONSE:
+			/* generate a authentication response */
+		    swtich(plugin_call(srv, con, con->state))
+		    {
+		    	case NETWORK_SOCKET_SUCCESS:
+		    	    break;
+		    	default:
+		    	    g_message("%s%d: plugin_call(CON_STATE_CREATE_AUTH_RESPONSE) != RET_SUCCESS", __FILE__, __LINE__);
+		    	    break;
+		    }
+            con->state = CON_STATE_SEND_AUTH_RESULT;
+            break;
+
 		case CON_STATE_SEND_AUTH:
 			/* send the auth-response to the server */
 			switch (network_mysqld_write(srv, con->server)) {

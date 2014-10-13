@@ -226,28 +226,53 @@ network_socket *network_connection_pool_get(network_connection_pool *pool,
 	return sock;
 }
 
+/*begin of add */
+GString *make_lookup(GString *db, GString *username)
+{
+	GString *lookup = g_string_new(NULL);
+
+	if( db != NULL && db->str != NULL)
+	    g_string_append(lookup, db->str);
+	else
+		g_string_append(lookup, "nodb");
+
+	if( username != NULL && username->str != NULL)
+		g_string_append(lookup, username->str);
+	else
+		g_string_append(lookup, "nouser");
+
+	return lookup;
+}
+/*end of add*/
 /**
  * add a connection to the connection pool
  *
  */
-network_connection_pool_entry *network_connection_pool_add(network_connection_pool *pool, network_socket *sock) {
+network_connection_pool_entry *network_connection_pool_add(network_connection_pool *pool, network_socket *sock, int auto_commit_flag) {
 	network_connection_pool_entry *entry;
 	GQueue *conns = NULL;
+	GHashTable *users = NULL;
+	GString *lookup = make_lookup(sock->default_db, sock->username);
+
+	if(auto_commit_flag != 1)
+		users = pool->backends_non_ac;
+	else
+		users = pool->backends_ac;
 
 	entry = network_connection_pool_entry_new();
 	entry->sock = sock;
 	entry->pool = pool;
 
 	g_get_current_time(&(entry->added_ts));
-	
+
 #ifdef DEBUG_CONN_POOL
 	g_debug("%s: (add) adding socket to pool for user '%s' -> %p", G_STRLOC, sock->username->str, sock);
 #endif
 
-	if (NULL == (conns = g_hash_table_lookup(pool->users, sock->response->username))) {
+	if (NULL == (conns = g_hash_table_lookup(users, lookup))) {
 		conns = g_queue_new();
 
-		g_hash_table_insert(pool->users, g_string_dup(sock->response->username), conns);
+		g_hash_table_insert(users, lookup, conns);
 	}
 
 	g_queue_push_tail(conns, entry);

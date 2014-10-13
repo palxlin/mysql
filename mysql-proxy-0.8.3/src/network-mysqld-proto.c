@@ -1173,4 +1173,98 @@ gchar *network_mysqld_proto_gstring_get_string_len(GString *packet, guint *_off,
 
 	return str;
 }
+
+gchar *network_mysqld_proto_gstring_get_gstring_len(GString *packet, guint *_off, gsize len, GString *out) {
+	g_string_truncate(out, 0);
+
+	if (len) {
+		g_assert(*_off < packet->len);
+		if (*_off + len > packet->len) {
+			log_error("packet-offset out of range: %u + "F_SIZE_T" > "F_SIZE_T, *_off, len, packet->len);
+		}
+
+		g_string_append_len(out, packet->str + *_off, len);
+		*_off += len;
+	}
+
+	return out->str;
+}
+gchar *network_mysqld_proto_gstring_get_gstring(GString *packet, guint *_off, GString *out) {
+	guint len;
+	gchar *r = NULL;
+
+	for (len = 0; *_off + len < packet->len && *(packet->str + *_off + len); len++);
+
+	g_assert(*(packet->str + *_off + len) == '\0'); /* this has to be a \0 */
+
+	if (len > 0) {
+		g_assert(*_off < packet->len);
+		g_assert(*_off + len <= packet->len);
+
+		r = network_mysqld_proto_gstring_get_gstring_len(packet, _off, len, out);
+	}
+
+	/* skip the \0 */
+	*_off += 1;
+
+	return r;
+}
+
+guint64 network_mysqld_proto_decode_lenenc(GString *s, guint *_off) {
+	guint off = *_off;
+	guint64 ret = 0;
+	unsigned char *bytestream = (unsigned char *)s->str;
+
+	g_assert(off < s->len);
+	
+	if (bytestream[off] < 251) { /* */
+		ret = bytestream[off];
+	} else if (bytestream[off] == 251) { /* NULL in row-data */
+		ret = bytestream[off];
+	} else if (bytestream[off] == 252) { /* 2 byte length*/
+		g_assert(off + 2 < s->len);
+		ret = (bytestream[off + 1] << 0) | 
+			(bytestream[off + 2] << 8) ;
+		off += 2;
+	} else if (bytestream[off] == 253) { /* 3 byte */
+		g_assert(off + 3 < s->len);
+		ret = (bytestream[off + 1]   <<  0) | 
+			(bytestream[off + 2] <<  8) |
+			(bytestream[off + 3] << 16);
+
+		off += 3;
+	} else if (bytestream[off] == 254) { /* 8 byte */
+		g_assert(off + 8 < s->len);
+		ret = (bytestream[off + 5] << 0) |
+			(bytestream[off + 6] << 8) |
+			(bytestream[off + 7] << 16) |
+			(bytestream[off + 8] << 24);
+		ret <<= 32;
+
+		ret |= (bytestream[off + 1] <<  0) | 
+			(bytestream[off + 2] <<  8) |
+			(bytestream[off + 3] << 16) |
+			(bytestream[off + 4] << 24);
+		
+
+		off += 8;
+	} else {
+		g_critical("%s.%d: bytestream[%d] is %d", 
+			__FILE__, __LINE__,
+			off, bytestream[off]);
+	}
+	off += 1;
+
+	*_off = off;
+
+	return ret;
+}
+
+gchar *network_mysqld_proto_get_lenenc_gstring(GString *packet, guint *_off, GString *out) {
+	guint64 len;
+
+	len = network_mysqld_proto_decode_lenenc(packet, _off);
+
+	return network_mysqld_proto_gstring_get_gstring_len(packet, _off, len, out);
+}
 /*end of add*/

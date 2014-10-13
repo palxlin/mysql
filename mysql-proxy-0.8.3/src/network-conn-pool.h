@@ -52,7 +52,7 @@ typedef struct {
 NETWORK_API network_socket *network_connection_pool_get(network_connection_pool *pool,
 		GString *username,
 		GString *default_db);
-NETWORK_API network_connection_pool_entry *network_connection_pool_add(network_connection_pool *pool, network_socket *sock);
+NETWORK_API network_connection_pool_entry *network_connection_pool_add(network_connection_pool *pool, network_socket *sock, int auto_commit_flag);
 NETWORK_API void network_connection_pool_remove(network_connection_pool *pool, network_connection_pool_entry *entry);
 NETWORK_API GQueue *network_connection_pool_get_conns(network_connection_pool *pool, GString *username, GString *);
 

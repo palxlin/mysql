@@ -85,6 +85,8 @@ struct chassis {
     /*begin of add*/
 	chassis_private *priv;          /**< backends pool and cli-connections*/
 	node_datanode_inf_t *backends_inf;
+
+	backend_config_t db_config;     /* proxy's config as backend itself*/
 	/*end of add*/
 
 	void (*priv_shutdown)(chassis *chas, chassis_private *priv);

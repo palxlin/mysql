@@ -1854,16 +1854,24 @@ timeval_from_double(struct timeval *dst, double t) {
 }
 
 NETWORK_MYSQLD_PLUGIN_PROTO(proxy_init) {
-	network_mysqld_con_lua_t *st = con->plugin_con_state;
+	plugin_con_state *st = (plugin_con_state)con->plugin_con_state;
 	chassis_plugin_config *config = con->config;
+	int ret;
 
 	g_assert(con->plugin_con_state == NULL);
 
-	st = network_mysqld_con_lua_new();
+	st = plugin_con_state_init();
+	//network_mysqld_con_lua_new();
 
 	con->plugin_con_state = st;
+
+	if( NETWORK_SOCKET_SUCCESS != (ret = proxy_create_handshake(srv, con)))
+	{
+		con->state = CON_STATE_ERROR;
+		return (retval_t)ret;
+	}
 	
-	con->state = CON_STATE_CONNECT_SERVER;
+	con->state = CON_STATE_SEND_HANDSHAKE;
 
 	/* set the connection specific timeouts
 	 *
@@ -1879,10 +1887,84 @@ NETWORK_MYSQLD_PLUGIN_PROTO(proxy_init) {
 		timeval_from_double(&con->write_timeout, config->write_timeout_dbl);
 	}
 
+	return NETWORK_SOCKET_SUCCESS;
+}
 
+/*begin of add*/
+NETWORK_MYSQLD_PLUGIN_PROTO(proxy_make_auth_resp) {
+	GString *packet;
+	GList *chunk;
+	network_socket *recv_sock, *send_sock;
+	mysql_packet_auth auth;
+	guint off = 0;
+	guint8 password_hash[256];
+	gchar password[256];
+	my_bool myb;
+
+    memset((void *)password_hash, 0, sizoef(password_hash));
+
+    recv_sock = con->client;
+    send_sock = con->client;
+
+    chunk = recv_sock->recv_queue->chunks->tail;
+    packet = (GString *)(chunk->data);
+
+    if(packet->len != recv_sock->packet_len + NET_HEADER_SIZE)
+    	return NETWORK_SOCKET_SUCCESS;
+
+    network_mysqld_proto_gstring_skip(packet, &off, NET_HEADER_SIZE);
+
+    auth.client_flags    = network_mysqld_proto_gstring_get_int32(packet, &off);
+	auth.max_packet_size = network_mysqld_proto_gstring_get_int32(packet, &off);
+	auth.charset_number  = network_mysqld_proto_gstring_get_int8(packet, &off);
+
+		// skip the filler
+	network_mysqld_proto_gstring_skip(packet, &off, 23);
+
+	// get the username	
+	network_mysqld_proto_gstring_get_gstring(packet, &off, con->client->username);
+
+	// get the scrambled pass
+	network_mysqld_proto_get_lenenc_gstring(packet, &off, con->client->scrambled_password);
+
+	if (off != packet->len) {
+		network_mysqld_proto_gstring_get_gstring(packet, &off, con->client->default_db);
+	}
+
+	if( strcmp(con->client->username->str, srv->db_config.default_username->str) != 0 )
+	{
+		/*send an error response*/
+		recv_sock->packet_len = PACKET_LEN_UNSET;
+		g_string_free(packet, TRUE);
+		g_queue_delete_link(recv_sock->recv_queue->chunks, chunk);
+
+		network_mysqld_con_send_error_full(con->client, "invalid username", 16, ER_USERNAME, get_sql_state(ER_USERNAME));
+		return NETWORK_SOCKET_ERROR;
+	}
+	password[0] = 0;
+	strcpy(password, srv->db_config.default_password->str);
+	mysql_make_scramble((char*)password_hash, password);
+
+	if((myb = mysql_is_valid(con->client->scrambled_password->str, con->client->scrambled_hash->str, password_hash)) != 0)
+	{
+		recv_sock->packet_len = PACKET_LEN_UNSET;
+		g_string_free(packet, TRUE);
+		g_queue_delete_link(recv_sock->recv_queue->chunks, chunk);
+		network_mysqld_con_send_error_full(con->client, "invalid password", 16, ER_PASSWORD_NO_MATCH, get_sql_state(ER_PASSWORD_NO_MATCH));
+		return NETWORK_SOCKET_ERROR;
+	}
+
+	con->client->packet_id = 2;
+	network_mysqld_con_send_ok(con->client);
+
+	recv_sock->packet_len = PACKET_LEN_UNSET;
+	g_string_free(packet, TRUE);
+	g_queue_delete_link(recv_sock->recv_queue->chunks, chunk);
 
 	return NETWORK_SOCKET_SUCCESS;
 }
+/*end of add*/
+
 
 static network_mysqld_lua_stmt_ret proxy_lua_disconnect_client(network_mysqld_con *con) {
 	network_mysqld_lua_stmt_ret ret = PROXY_NO_DECISION;
@@ -2138,13 +2220,14 @@ int network_mysqld_proxy_connection_init(network_mysqld_con *con) {
 	con->plugins.con_connect_server            = proxy_connect_server;
 	con->plugins.con_read_handshake            = proxy_read_handshake;
 	con->plugins.con_read_auth                 = proxy_read_auth;
+	con->plugins.con_create_auth_result	       = proxy_make_auth_resp;
 	con->plugins.con_read_auth_result          = proxy_read_auth_result;
 	con->plugins.con_read_query                = proxy_read_query;
 	con->plugins.con_read_query_result         = proxy_read_query_result;
 	con->plugins.con_send_query_result         = proxy_send_query_result;
-	con->plugins.con_read_local_infile_data = proxy_read_local_infile_data;
-	con->plugins.con_read_local_infile_result = proxy_read_local_infile_result;
-	con->plugins.con_send_local_infile_result = proxy_send_local_infile_result;
+	con->plugins.con_read_local_infile_data    = proxy_read_local_infile_data;
+	con->plugins.con_read_local_infile_result  = proxy_read_local_infile_result;
+	con->plugins.con_send_local_infile_result  = proxy_send_local_infile_result;
 	con->plugins.con_cleanup                   = proxy_disconnect_client;
 	con->plugins.con_timeout                   = proxy_timeout;
 
@@ -2313,6 +2396,8 @@ int network_mysqld_proxy_plugin_apply_config(chassis *chas, chassis_plugin_confi
 			return -1;
 		}
 	}
+
+	
 	/*begin of add  init backend pool structure*/
     network_backends_connection_pool_init(chas);
     

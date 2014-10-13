@@ -214,7 +214,7 @@ int network_connection_pool_lua_add_connection(network_mysqld_con *con) {
 	con->server->is_authed = 1;
 
 	/* insert the server socket into the connection pool */
-	pool_entry = network_connection_pool_add(st->backend->pool, con->server);
+	pool_entry = network_connection_pool_add(st->backend->pool, con->server, 1);
 
 	event_set(&(con->server->event), con->server->fd, EV_READ, network_mysqld_con_idle_handle, pool_entry);
 	chassis_event_add_local(con->srv, &(con->server->event)); /* add a event, but stay in the same thread */
